@@ -1,0 +1,21 @@
+plugins {
+    id 'java'
+}
+
+group 'cm'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.11
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.hdrhistogram:HdrHistogram:2.1.11"
+    implementation "io.perfmark:perfmark-api:0.20.1"
+    implementation "io.perfmark:perfmark-traceviewer:0.20.1"
+    runtimeOnly "io.perfmark:perfmark-java9:0.20.1"
+    runtimeOnly "io.perfmark:perfmark-java7:0.20.1"
+    testCompile group: 'junit', name: 'junit', version: '4.12'
+}
