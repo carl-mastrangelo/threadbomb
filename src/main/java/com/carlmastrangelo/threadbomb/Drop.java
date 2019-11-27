@@ -35,8 +35,8 @@ public final class Drop {
     Histogram executeLatency = new AtomicHistogram(Long.MAX_VALUE, 5);
 
     SplittableRandom random = new SplittableRandom();
-    LongSupplier workPacer = () -> nextDelay(random, 10000);
-    LongSupplier workSupplier = () -> 10_000L; // 1ms
+    LongSupplier workPacer = () -> nextDelay(random, 100);
+    LongSupplier workSupplier = () -> 10_000_000L; // 10ms
     long testDurationNanos = TimeUnit.SECONDS.toNanos(10);
 
     ExecutorService exec = Executors.newSingleThreadExecutor();
@@ -66,20 +66,20 @@ public final class Drop {
 
     final long startTimeNanos = System.nanoTime();
     long nextWorkTime = startTimeNanos;
-    long itemCreateNanos = startTimeNanos;
+    long itemSubmittedNanos;
 
-    while (itemCreateNanos - startTimeNanos < durationNanos) {
-      WorkItem wi = new WorkItem(workSupplier.getAsLong(), itemCreateNanos);
+    do {
+      WorkItem wi = new WorkItem(workSupplier.getAsLong(), nextWorkTime);
+      long itemCreateNanos = System.nanoTime();
       exec.execute(wi);
-      long itemSubmittedNanos = System.nanoTime();
+      itemSubmittedNanos = System.nanoTime();
       itemsSubmitted++;
       long executeDurationNanos = itemSubmittedNanos - itemCreateNanos;
       executeLatency.recordValue(executeDurationNanos);
       nextWorkTime += workPacer.getAsLong();
       // Attempt to keep pace even if execute took a long time.
       sleep(nextWorkTime - itemSubmittedNanos);
-      itemCreateNanos = System.nanoTime();
-    }
+    } while (itemSubmittedNanos - startTimeNanos < durationNanos);
 
     logger.info("Run complete, waiting for completion");
     long itemsCompletedSnapshot;
@@ -141,6 +141,12 @@ public final class Drop {
 
   private static final double DELAY_EPSILON = Math.nextUp(0d);
 
+  /**
+   * Returns the exponentially distributed next delay time in nanoseconds.
+   * @param random
+   * @param itemsPerSecond
+   * @return
+   */
   private static long nextDelay(SplittableRandom random, double itemsPerSecond) {
     double seconds = -Math.log(Math.max(random.nextDouble(), DELAY_EPSILON)) / itemsPerSecond;
     double nanos = seconds * 1_000_000_000.;
