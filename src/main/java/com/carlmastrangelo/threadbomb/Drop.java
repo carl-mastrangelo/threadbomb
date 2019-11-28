@@ -1,17 +1,20 @@
 package com.carlmastrangelo.threadbomb;
 
 import java.io.PrintStream;
+import java.text.MessageFormat;
 import java.util.SplittableRandom;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.LongSupplier;
+import java.util.logging.Formatter;
 import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.logging.Logger;
+import java.util.logging.SimpleFormatter;
 import org.HdrHistogram.AtomicHistogram;
 import org.HdrHistogram.Histogram;
 
@@ -22,7 +25,7 @@ public final class Drop {
   // How long should the test run
   private final long durationNanos;
   private final Histogram executeLatency;
-  private final Histogram executeToRunLatency = new AtomicHistogram(Long.MAX_VALUE, 4);
+  private final Histogram executeToRunLatency;
   private final Histogram runLatency = new AtomicHistogram(Long.MAX_VALUE, 4);
   private final Executor exec;
   private final LongSupplier workPacer;
@@ -33,6 +36,7 @@ public final class Drop {
 
   public static void main(String [] arg) {
     Histogram executeLatency = new AtomicHistogram(Long.MAX_VALUE, 5);
+    Histogram executeToRunLatency = new AtomicHistogram(Long.MAX_VALUE, 5);
 
     SplittableRandom random = new SplittableRandom();
     LongSupplier workPacer = () -> nextDelay(random, 100);
@@ -41,20 +45,23 @@ public final class Drop {
 
     ExecutorService exec = Executors.newSingleThreadExecutor();
     try {
-      new Drop(exec, executeLatency, testDurationNanos, workPacer, workSupplier).run();
+      new Drop(exec, executeLatency, executeToRunLatency, testDurationNanos, workPacer, workSupplier).run();
     } finally {
       exec.shutdownNow();
     }
     log(System.err, executeLatency, "Execute Latency");
+    log(System.err, executeToRunLatency, "ExecuteToRun Latency");
   }
 
   Drop(
       Executor exec,
       Histogram executeLatency,
+      Histogram executeToRunLatency,
       long durationNanos,
       LongSupplier workPacer,
       LongSupplier workSupplier) {
     this.executeLatency = executeLatency;
+    this.executeToRunLatency = executeToRunLatency;
     this.exec = exec;
     this.durationNanos = durationNanos;
     this.workPacer = workPacer;
@@ -115,14 +122,15 @@ public final class Drop {
 
   static void log(PrintStream out, Histogram histogram, String name) {
     out.println(name);
-    out.println("Total:  " + histogram.getTotalCount());
-    out.println("Avg:    " + histogram.getMean());
-    out.println("Median: " + histogram.getValueAtPercentile(50.0));
-    out.println("90%:    " + histogram.getValueAtPercentile(90.0));
-    out.println("99%:    " + histogram.getValueAtPercentile(99.0));
-    out.println("99.9%:  " + histogram.getValueAtPercentile(99.9));
-    out.println("99.99%: " + histogram.getValueAtPercentile(99.99));
-    out.println("100%:   " + histogram.getValueAtPercentile(100.0));
+
+    out.println(MessageFormat.format("Total:  {0}", histogram.getTotalCount()));
+    out.println(MessageFormat.format("Avg:    {0}ns", (long) histogram.getMean()));
+    out.println(MessageFormat.format("Median: {0}ns", histogram.getValueAtPercentile(50)));
+    out.println(MessageFormat.format("90%:    {0}ns", histogram.getValueAtPercentile(90)));
+    out.println(MessageFormat.format("99%:    {0}ns", histogram.getValueAtPercentile(99)));
+    out.println(MessageFormat.format("99.9%:  {0}ns", histogram.getValueAtPercentile(99.9)));
+    out.println(MessageFormat.format("99.99%: {0}ns", histogram.getValueAtPercentile(99.9)));
+    out.println(MessageFormat.format("100%:   {0}ns", histogram.getValueAtPercentile(100)));
   }
 
   private static void sleep(long ns) {
