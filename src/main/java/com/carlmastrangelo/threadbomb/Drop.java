@@ -3,18 +3,23 @@ package com.carlmastrangelo.threadbomb;
 import java.io.PrintStream;
 import java.text.MessageFormat;
 import java.util.SplittableRandom;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.LongSupplier;
-import java.util.logging.Formatter;
 import java.util.logging.Level;
-import java.util.logging.LogRecord;
 import java.util.logging.Logger;
-import java.util.logging.SimpleFormatter;
 import org.HdrHistogram.AtomicHistogram;
 import org.HdrHistogram.Histogram;
 
@@ -26,7 +31,7 @@ public final class Drop {
   private final long durationNanos;
   private final Histogram executeLatency;
   private final Histogram executeToRunLatency;
-  private final Histogram runLatency = new AtomicHistogram(Long.MAX_VALUE, 4);
+  private final Histogram scheduleToExecuteLatency;
   private final Executor exec;
   private final LongSupplier workPacer;
   private final LongSupplier workSupplier;
@@ -35,31 +40,48 @@ public final class Drop {
   private final LongAdder itemsComplete = new LongAdder();
 
   public static void main(String [] arg) {
+    Histogram scheduleToExecuteLatency = new AtomicHistogram(Long.MAX_VALUE, 5);
     Histogram executeLatency = new AtomicHistogram(Long.MAX_VALUE, 5);
     Histogram executeToRunLatency = new AtomicHistogram(Long.MAX_VALUE, 5);
 
-    SplittableRandom random = new SplittableRandom();
-    LongSupplier workPacer = () -> nextDelay(random, 100);
-    LongSupplier workSupplier = () -> 10_000_000L; // 10ms
-    long testDurationNanos = TimeUnit.SECONDS.toNanos(10);
+    long seed = new SplittableRandom().nextLong();
+    seed = 5337644705666772232L;
+    logger.info("Using seed of " + seed);
+    SplittableRandom random = new SplittableRandom(seed);
 
-    ExecutorService exec = Executors.newSingleThreadExecutor();
+    LongSupplier workPacer = () -> nextDelay(random, 500000);
+    LongSupplier workSupplier = () -> 10_000_0L; // ns
+    long testDurationNanos = TimeUnit.SECONDS.toNanos(60);
+
+    /*
+    BlockingQueue<Runnable> q = new LinkedBlockingDeque<>();
+    ThreadPoolExecutor exec = new ThreadPoolExecutor(
+        50, 50, 1, TimeUnit.MINUTES, q);
+    exec.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+    exec.setRejectedExecutionHandler(new BlockOnEnqueue(q));
+     */
+    ExecutorService exec = new ForkJoinPool(256);
     try {
-      new Drop(exec, executeLatency, executeToRunLatency, testDurationNanos, workPacer, workSupplier).run();
+      new Drop(
+          exec, scheduleToExecuteLatency, executeLatency, executeToRunLatency, testDurationNanos, workPacer, workSupplier)
+          .run();
     } finally {
       exec.shutdownNow();
     }
+    log(System.err, scheduleToExecuteLatency, "ScheduleToExecute Latency");
     log(System.err, executeLatency, "Execute Latency");
     log(System.err, executeToRunLatency, "ExecuteToRun Latency");
   }
 
   Drop(
       Executor exec,
+      Histogram scheduleToExecuteLatency,
       Histogram executeLatency,
       Histogram executeToRunLatency,
       long durationNanos,
       LongSupplier workPacer,
       LongSupplier workSupplier) {
+    this.scheduleToExecuteLatency = scheduleToExecuteLatency;
     this.executeLatency = executeLatency;
     this.executeToRunLatency = executeToRunLatency;
     this.exec = exec;
@@ -83,6 +105,7 @@ public final class Drop {
       itemsSubmitted++;
       long executeDurationNanos = itemSubmittedNanos - itemCreateNanos;
       executeLatency.recordValue(executeDurationNanos);
+      scheduleToExecuteLatency.recordValue(itemCreateNanos - nextWorkTime);
       nextWorkTime += workPacer.getAsLong();
       // Attempt to keep pace even if execute took a long time.
       sleep(nextWorkTime - itemSubmittedNanos);
@@ -115,7 +138,7 @@ public final class Drop {
       sleep(durationNanos);
       long itemStop = System.nanoTime();
       executeToRunLatency.recordValue(itemStart - creationNanos);
-      runLatency.recordValue(itemStop - itemStart);
+      // runLatency.recordValue(itemStop - itemStart);
       itemsComplete.increment();
     }
   }
@@ -129,7 +152,7 @@ public final class Drop {
     out.println(MessageFormat.format("90%:    {0}ns", histogram.getValueAtPercentile(90)));
     out.println(MessageFormat.format("99%:    {0}ns", histogram.getValueAtPercentile(99)));
     out.println(MessageFormat.format("99.9%:  {0}ns", histogram.getValueAtPercentile(99.9)));
-    out.println(MessageFormat.format("99.99%: {0}ns", histogram.getValueAtPercentile(99.9)));
+    out.println(MessageFormat.format("99.99%: {0}ns", histogram.getValueAtPercentile(99.99)));
     out.println(MessageFormat.format("100%:   {0}ns", histogram.getValueAtPercentile(100)));
   }
 
@@ -159,5 +182,23 @@ public final class Drop {
     double seconds = -Math.log(Math.max(random.nextDouble(), DELAY_EPSILON)) / itemsPerSecond;
     double nanos = seconds * 1_000_000_000.;
     return Math.round(nanos);
+  }
+
+  private static final class BlockOnEnqueue implements RejectedExecutionHandler {
+
+    private final BlockingQueue<Runnable> queue;
+
+    BlockOnEnqueue(BlockingQueue<Runnable> queue) {
+      this.queue = queue;
+    }
+
+    @Override
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
+      try {
+        queue.put(r);
+      } catch (InterruptedException e) {
+        throw new RejectedExecutionException(e);
+      }
+    }
   }
 }
